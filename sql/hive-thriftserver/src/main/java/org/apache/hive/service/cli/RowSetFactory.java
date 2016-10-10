@@ -26,16 +26,16 @@ import static org.apache.hive.service.cli.thrift.TProtocolVersion.HIVE_CLI_SERVI
 public class RowSetFactory {
 
   public static RowSet create(TableSchema schema, TProtocolVersion version) {
-    if (version.getValue() >= HIVE_CLI_SERVICE_PROTOCOL_V6.getValue()) {
-      return new ColumnBasedSet(schema);
-    }
+    //if (version.getValue() >= HIVE_CLI_SERVICE_PROTOCOL_V6.getValue()) {
+    //  return new ColumnBasedSet(schema);
+    //}
     return new RowBasedSet(schema);
   }
 
   public static RowSet create(TRowSet results, TProtocolVersion version) {
-    if (version.getValue() >= HIVE_CLI_SERVICE_PROTOCOL_V6.getValue()) {
-      return new ColumnBasedSet(results);
-    }
+    //if (version.getValue() >= HIVE_CLI_SERVICE_PROTOCOL_V6.getValue()) {
+    //  return new ColumnBasedSet(results);
+    //}
     return new RowBasedSet(results);
   }
 }

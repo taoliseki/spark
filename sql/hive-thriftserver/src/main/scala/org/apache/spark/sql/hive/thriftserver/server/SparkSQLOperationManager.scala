@@ -18,7 +18,8 @@
 package org.apache.spark.sql.hive.thriftserver.server
 
 import java.util.{Map => JMap}
-import java.util.concurrent.ConcurrentHashMap
+
+import scala.collection.mutable.Map
 
 import org.apache.hive.service.cli._
 import org.apache.hive.service.cli.operation.{ExecuteStatementOperation, Operation, OperationManager}
@@ -28,6 +29,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.hive.HiveSessionState
 import org.apache.spark.sql.hive.thriftserver.{ReflectionUtils, SparkExecuteStatementOperation}
+import org.apache.spark.sql.hive.thriftserver.rsc.RSCClient
 
 /**
  * Executes queries using Spark SQL, and maintains a list of handles to active queries.
@@ -38,24 +40,22 @@ private[thriftserver] class SparkSQLOperationManager()
   val handleToOperation = ReflectionUtils
     .getSuperField[JMap[OperationHandle, Operation]](this, "handleToOperation")
 
-  val sessionToActivePool = new ConcurrentHashMap[SessionHandle, String]()
-  val sessionToContexts = new ConcurrentHashMap[SessionHandle, SQLContext]()
+  val sessionToActivePool = Map[SessionHandle, String]()
+  val sessionToContexts = Map[SessionHandle, SQLContext]()
+  val sessionToRscClinet = Map[SessionHandle, RSCClient]()
 
   override def newExecuteStatementOperation(
       parentSession: HiveSession,
       statement: String,
       confOverlay: JMap[String, String],
       async: Boolean): ExecuteStatementOperation = synchronized {
-    val sqlContext = sessionToContexts.get(parentSession.getSessionHandle)
-    require(sqlContext != null, s"Session handle: ${parentSession.getSessionHandle} has not been" +
-      s" initialized or had already closed.")
-    val sessionState = sqlContext.sessionState.asInstanceOf[HiveSessionState]
-    val runInBackground = async && sessionState.hiveThriftServerAsync
+    // Assuming impersonation is enabled
+    val rscClient = sessionToRscClinet(parentSession.getSessionHandle)
     val operation = new SparkExecuteStatementOperation(parentSession, statement, confOverlay,
-      runInBackground)(sqlContext, sessionToActivePool)
+      async)(rscClient, sessionToActivePool)
     handleToOperation.put(operation.getHandle, operation)
     logDebug(s"Created Operation for $statement with session=$parentSession, " +
-      s"runInBackground=$runInBackground")
+      s"runInBackground=$async")
     operation
   }
 }

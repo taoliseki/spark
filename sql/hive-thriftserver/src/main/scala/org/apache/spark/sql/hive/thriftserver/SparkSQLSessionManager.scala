@@ -17,7 +17,10 @@
 
 package org.apache.spark.sql.hive.thriftserver
 
+import java.net.URI
 import java.util.concurrent.Executors
+
+import scala.collection.mutable.Map
 
 import org.apache.commons.logging.Log
 import org.apache.hadoop.hive.conf.HiveConf
@@ -30,14 +33,16 @@ import org.apache.hive.service.server.HiveServer2
 import org.apache.spark.sql.SQLContext
 import org.apache.spark.sql.hive.{HiveSessionState, HiveUtils}
 import org.apache.spark.sql.hive.thriftserver.ReflectionUtils._
+import org.apache.spark.sql.hive.thriftserver.rsc.{RSCClientBuilder, RSCClient, RSCConf}
+import org.apache.spark.sql.hive.thriftserver.rsc.RSCConf
 import org.apache.spark.sql.hive.thriftserver.server.SparkSQLOperationManager
-
 
 private[hive] class SparkSQLSessionManager(hiveServer: HiveServer2, sqlContext: SQLContext)
   extends SessionManager(hiveServer)
   with ReflectedCompositeService {
 
   private lazy val sparkSqlOperationManager = new SparkSQLOperationManager()
+  private var isImpersonationEnabled: Boolean = false;
 
   override def init(hiveConf: HiveConf) {
     setSuperField(this, "hiveConf", hiveConf)
@@ -72,21 +77,41 @@ private[hive] class SparkSQLSessionManager(hiveServer: HiveServer2, sqlContext: 
     val session = super.getSession(sessionHandle)
     HiveThriftServer2.listener.onSessionCreated(
       session.getIpAddress, sessionHandle.getSessionId.toString, session.getUsername)
-    val sessionState = sqlContext.sessionState.asInstanceOf[HiveSessionState]
-    val ctx = if (sessionState.hiveThriftServerSingleSession) {
-      sqlContext
+
+    isImpersonationEnabled = withImpersonation
+
+    if (withImpersonation)
+    {
+      val builder = new RSCClientBuilder()
+        .setConf(RSCConf.Entry.DRIVER_CLASS.key(), "org.apache.spark.sql.hive.thriftserver.rsc.StsDriver")
+        .setConf(RSCConf.Entry.PROXY_USER.key(), username)
+        .setURI(new URI("rsc:/"))
+      val client = builder.build().asInstanceOf[RSCClient]
+      sparkSqlOperationManager.sessionToRscClinet += sessionHandle -> client
     } else {
-      sqlContext.newSession()
+      val sessionState = sqlContext.sessionState.asInstanceOf[HiveSessionState]
+      val ctx = if (sessionState.hiveThriftServerSingleSession) {
+        sqlContext
+      } else {
+        sqlContext.newSession()
+      }
+      ctx.setConf("spark.sql.hive.version", HiveUtils.hiveExecutionVersion)
+      sparkSqlOperationManager.sessionToContexts += sessionHandle -> ctx
     }
-    ctx.setConf("spark.sql.hive.version", HiveUtils.hiveExecutionVersion)
-    sparkSqlOperationManager.sessionToContexts.put(sessionHandle, ctx)
+
     sessionHandle
   }
 
   override def closeSession(sessionHandle: SessionHandle) {
     HiveThriftServer2.listener.onSessionClosed(sessionHandle.getSessionId.toString)
     super.closeSession(sessionHandle)
-    sparkSqlOperationManager.sessionToActivePool.remove(sessionHandle)
-    sparkSqlOperationManager.sessionToContexts.remove(sessionHandle)
+    sparkSqlOperationManager.sessionToActivePool -= sessionHandle
+    if (isImpersonationEnabled) {
+      var map: Map[SessionHandle, RSCClient] = sparkSqlOperationManager.sessionToRscClinet
+      map(sessionHandle).stop(true)
+      sparkSqlOperationManager.sessionToRscClinet.remove(sessionHandle)
+    } else {
+      sparkSqlOperationManager.sessionToContexts.remove(sessionHandle)
+    }
   }
 }
